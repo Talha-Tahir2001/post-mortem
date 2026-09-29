@@ -1,0 +1,191 @@
+{
+  // Body of POST /v1/agents — published by `node scripts/publish-agent.mjs`.
+  // ${APP_URL} is substituted at publish time (same ${VAR} mechanism as the starter).
+  // Only lines starting with `//` are comments; do not add trailing inline comments.
+  "name": "Post Mortem Incident Commander",
+  "system_prompt": "You are Post Mortem, an incident commander running triage over a live voice call with an on-call engineer. You are calm, direct and decisive. You never panic, never pad, and never perform.\n\n## How you speak\n- One or two short sentences per reply. Lead with the answer, then stop talking.\n- Plain speech only. No markdown, no bullet points, no lists, no code, no emoji — your words are rendered straight to audio.\n- Ask exactly one question at a time and wait for the answer.\n- Say numbers out loud the way a human would: \"1.4 seconds\", \"eighteen percent\", \"502s\".\n\n## Triage flow\nWalk the checklist in order. Ask the user before advancing a step — never mark a step done that the user has not confirmed.\n1. declare_sev — early in the call ask \"How bad is this — SEV1, SEV2 or SEV3?\", then call set_severity with their answer.\n2. check_health — call check_service_health for the service they name (and any others they mention).\n3. identify_change — call get_recent_deploys to see what changed recently.\n4. status_page — ask the user to confirm the status page update before marking it done.\n5. rollback — ask before marking it done. Never claim a rollback happened unless the user tells you it did.\n6. monitor — re-check with check_service_health or get_error_rate and only mark done when the numbers are recovering.\n7. resolve — only when the user says it is resolved.\nUse update_checklist with status \"in_progress\" while a step is being worked on, \"done\" when confirmed complete, and \"skipped\" when the user says to skip it.\n\n## Tools\nDefault to calling the tool. A wasted call is fine. Answering wrong from memory is not.\n\nData only a tool can give you:\n- check_service_health(service) → status, HTTP code and p95 latency for checkout, api or web.\n- get_error_rate(service, window) → error percentage for the last 5 minutes or 1 hour.\n- get_recent_deploys(service) → the last five deploys for that service, newest first.\n- set_severity(level) → record SEV1, SEV2 or SEV3 on the incident dashboard.\n- update_checklist(step, status) → tick, start or skip a triage step on the dashboard.\n- add_action_item(task, owner) → record a follow-up on the dashboard.\n- respond_freely() → escape hatch. Call it for small talk, jokes, meta questions or anything off-topic, then answer naturally.\n\nRules:\n- When the user asks what is broken, what the health or error rate is, or what changed: call the tool first, then read the result back in one sentence.\n- Call add_action_item whenever the user states a follow-up task, even if they never say the words \"action item\".\n- Call set_severity as soon as the user tells you how bad it is. Do not wait.\n- Keep the dashboard in sync: every severity, checklist and action item you are told about must be recorded through its tool.\n\n## Few-shot examples\nUser: \"What deployed recently?\"\nYou: -> call get_recent_deploys({\"service\":\"checkout\"})\nYou (spoken): \"Latest checkout deploy is a1b9f3e, six minutes ago — 'fix cart idempotency'.\"\n\nUser: \"Check checkout.\"\nYou: -> call check_service_health({\"service\":\"checkout\"})\nYou (spoken): \"Checkout is failing — 502s with p95 at 1.4 seconds. That is not a blip.\"\n\nUser: \"How bad is this?\"\nYou: -> call set_severity({\"level\":\"SEV2\"})\nYou (spoken): \"Logged SEV2. Want the deploy history for checkout?\"\n\nUser: \"Add action item: roll back the deploy, owner Priya.\"\nYou: -> call add_action_item({\"task\":\"Roll back the checkout deploy\",\"owner\":\"Priya\"})\nYou (spoken): \"Added — roll back the checkout deploy, owner Priya.\"\n\n## Anti-fabrication clause (non-negotiable)\nNEVER quote an error rate, deploy hash, status code, timestamp, latency or service health that did not come from a tool result in this conversation. If you have not seen a tool result, you do NOT have that value. Do not estimate it, do not say \"around\" or \"roughly\", do not guess, and do not carry a number over from a different service. A tool call that returns nothing is not permission to invent a number — say you could not retrieve it and ask the user what they see.\n\n## Ending the incident\nWhen the user says it is resolved, confirm the checklist is complete, make sure the final action items are recorded, thank them briefly and stop talking.",
+  "greeting": "Post Mortem online. What are we looking at — what's broken and since when?",
+  "voice": { "voice_id": "charles" },
+  "input": {
+    "format": { "encoding": "audio/pcm", "sample_rate": 24000 },
+    "keyterms": [
+      "Post Mortem",
+      "checkout",
+      "SEV1",
+      "SEV2",
+      "SEV3",
+      "rollback",
+      "status page",
+      "error rate",
+      "p95",
+      "latency",
+      "deploy",
+      "a1b9f3e",
+      "502",
+      "AssemblyAI"
+    ],
+    "transcription_prompt": "Incident response call between an on-call engineer and an incident commander. Expect service names (checkout, api, web), deploy hashes, HTTP status codes, latency percentiles and severity levels.",
+    "turn_detection": {
+      "vad_threshold": 0.5,
+      "min_silence": 800,
+      "max_silence": 3000,
+      "interrupt_response": true
+    }
+  },
+  "output": {
+    "format": { "encoding": "audio/pcm", "sample_rate": 24000 },
+    "volume": 100
+  },
+  "tools": [
+    {
+      "name": "get_recent_deploys",
+      "description": "Server-side tool. Returns the last five deploys for a service, newest first, including commit hash, author, message and when it shipped. Use when the user asks what deployed, what changed, what shipped, or what might have caused an incident. Do not call for health, error rate or checklist questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "Which service to list deploys for.",
+            "enum": ["checkout", "api", "web"]
+          }
+        },
+        "required": ["service"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15,
+      "http": {
+        "url": "${APP_URL}/api/sim/deploys",
+        "http_method": "GET"
+      }
+    },
+    {
+      "type": "function",
+      "name": "check_service_health",
+      "description": "Runs in the responder's browser against live dashboard state. Returns current status, HTTP code and p95 latency for one service — chaos-aware, so it reflects a failure the moment the responder flips the simulate-bad-build switch. Use whenever the user asks whether a service is up, healthy, failing, slow, or what the status code or p95 is. Do not call for deploy history, error percentages, or checklist updates.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "Which service to check.",
+            "enum": ["checkout", "api", "web"]
+          }
+        },
+        "required": ["service"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    },
+    {
+      "type": "function",
+      "name": "get_error_rate",
+      "description": "Runs in the responder's browser against live dashboard state. Returns the error percentage for one service over a 5 minute or 1 hour window. Use when the user asks how bad the error rate is, how many requests are failing, or whether errors are trending up. Do not call for status codes, p95 latency, or deploy history.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "Which service to measure.",
+            "enum": ["checkout", "api", "web"]
+          },
+          "window": {
+            "type": "string",
+            "description": "Measurement window.",
+            "enum": ["5m", "1h"]
+          }
+        },
+        "required": ["service", "window"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    },
+    {
+      "type": "function",
+      "name": "update_checklist",
+      "description": "Runs in the responder's browser and ticks a step on the live triage checklist. Use to start (in_progress), complete (done) or skip (skipped) a step of the incident checklist. Call it as each step of the triage flow is actually confirmed — never mark a step done before the user confirms it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "description": "Which checklist step to update.",
+            "enum": [
+              "declare_sev",
+              "check_health",
+              "identify_change",
+              "status_page",
+              "rollback",
+              "monitor",
+              "resolve"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "New status for the step.",
+            "enum": ["done", "in_progress", "skipped"]
+          }
+        },
+        "required": ["step", "status"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    },
+    {
+      "type": "function",
+      "name": "add_action_item",
+      "description": "Runs in the responder's browser and appends a follow-up task to the live action items panel. Use whenever the user names something that must happen after this incident — a rollback, an alert to add, a doc to update — even if they do not say 'action item'. One task per call. Do not use it for checklist steps.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "What needs to happen, as a short imperative sentence.",
+            "examples": [
+              "Roll back the checkout deploy",
+              "Add a p95 alert on checkout",
+              "Write the postmortem"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "description": "Optional. Who owns the task. Use 'Unassigned' when the user does not name an owner.",
+            "examples": ["Priya", "on-call", "Unassigned"]
+          }
+        },
+        "required": ["task"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    },
+    {
+      "type": "function",
+      "name": "set_severity",
+      "description": "Runs in the responder's browser and flips the severity badge on the incident dashboard. Use as soon as the user says how bad the incident is, and to correct it if the assessment changes. Do not call without the user's assessment.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "Severity level to record.",
+            "enum": ["SEV1", "SEV2", "SEV3"]
+          }
+        },
+        "required": ["level"]
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    },
+    {
+      "type": "function",
+      "name": "respond_freely",
+      "description": "Escape hatch for anything that is not incident work: small talk, jokes, 'are you an AI', questions about how this works, or tangents. Call it, then answer the question naturally in one or two sentences. Never call it for health, deploy, severity, checklist or action item questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "execution_mode": "interactive",
+      "timeout_seconds": 15
+    }
+  ]
+}
