@@ -1,4 +1,4 @@
-import { Geist, Geist_Mono, IBM_Plex_Sans, Space_Grotesk } from "next/font/google"
+import { Geist_Mono, IBM_Plex_Sans, Space_Grotesk } from "next/font/google"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
